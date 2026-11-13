@@ -1,12 +1,12 @@
 import express from 'express';
 const app=express();app.use(express.json());app.use(express.static('public'));const port=process.env.PORT||10000;
-let cached=null,cachedAt=0,latest=null,history=[],liveRequest=0;
+let cached=null,cachedAt=0,latest=null,history=[],liveRequest=0,liveCommandSent=false;
 function auth(req,res,next){if(!process.env.SENSOR_TOKEN||req.get('authorization')!=='Bearer '+process.env.SENSOR_TOKEN)return res.sendStatus(401);next()}
 async function fetchForecast(url,source,parse){const r=await fetch(url);if(!r.ok)throw Error(source+' HTTP '+r.status);return parse(await r.json())}
 async function forecast(){const q=new URLSearchParams({latitude:'33.8938',longitude:'35.5018',hourly:'temperature_2m,relative_humidity_2m',forecast_days:'3',timezone:'Asia/Beirut'});try{return await fetchForecast('https://api.open-meteo.com/v1/forecast?'+q,'Open-Meteo',d=>({location:'Beirut, Lebanon',sources:['Open-Meteo'],hours:d.hourly.time.map((time,i)=>({time,temperature:d.hourly.temperature_2m[i],humidity:d.hourly.relative_humidity_2m[i]})),updatedAt:new Date().toISOString()}))}catch{const d=await fetchForecast('https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=33.8938&lon=35.5018','MET Norway',x=>x);return {location:'Beirut, Lebanon',sources:['MET Norway'],hours:d.properties.timeseries.filter(x=>Date.parse(x.time)<Date.now()+72*3600000).map(x=>({time:x.time,temperature:x.data.instant.details.air_temperature,humidity:x.data.instant.details.relative_humidity})),updatedAt:new Date().toISOString()}}}
 app.get('/api/weather',async(_q,s)=>{try{if(!cached||Date.now()-cachedAt>600000){cached=await forecast();cachedAt=Date.now()}s.json(cached)}catch(e){console.error(e);s.status(502).json({error:'Forecast unavailable'})}});
 app.get('/api/sensor',(_q,s)=>s.json({latest,history:history.filter(x=>Date.now()-Date.parse(x.timestamp)<259200000),bridge:Date.now()-Number(latest?.receivedAt||0)<120000?'connected':'offline',liveUntil:liveRequest||null}));
-app.post('/api/sensor/request',(_q,s)=>{liveRequest=Date.now()+60000;s.json({ok:true,liveUntil:liveRequest})});
-app.get('/api/bridge/command',auth,(_q,s)=>{const pending=liveRequest>Date.now();s.json({request:pending,requestId:pending?liveRequest:null})});
+app.post('/api/sensor/request',(_q,s)=>{liveRequest=Date.now()+60000;liveCommandSent=false;s.json({ok:true,liveUntil:liveRequest})});
+app.get('/api/bridge/command',auth,(_q,s)=>{const pending=liveRequest>Date.now()&&!liveCommandSent;if(pending)liveCommandSent=true;s.json({request:pending,requestId:pending?liveRequest:null})});
 app.post('/api/bridge/reading',auth,(q,s)=>{const {temperature,humidity}=q.body||{};if(!Number.isFinite(temperature)||!Number.isFinite(humidity))return s.status(400).json({error:'Bad reading'});latest={temperature,humidity,timestamp:new Date().toISOString(),receivedAt:Date.now()};if(!history.length||Date.now()-Date.parse(history.at(-1).timestamp)>3500000)history.push(latest);history=history.filter(x=>Date.now()-Date.parse(x.timestamp)<259200000);s.json({ok:true})});
 app.get('*',(_q,s)=>s.sendFile(process.cwd()+'/public/index.html'));app.listen(port,'0.0.0.0');
